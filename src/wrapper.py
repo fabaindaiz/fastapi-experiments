@@ -1,3 +1,5 @@
+import inspect
+from typing import Callable
 from fastapi import APIRouter
 from fastapi import Depends
 from functools import wraps
@@ -14,18 +16,18 @@ def get_user():
     return {"name": "test", "permissions": ["test"]}
 
 def permissions(permissions: list[str]):
-    def aux(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
+    def wrapper(endpoint: Callable):
+        @wraps(endpoint)
+        async def inner(*args, **kwargs):
             user = kwargs.get("user", None)
             if not user:
                 raise HTTP_401_UNAUTHORIZED("No está autenticado")
             for permission in permissions:
                 if permission not in user["permissions"]:
                     raise HTTP_403_FORBIDDEN("No tiene permisos")
-            return await func(*args, **kwargs)
-        return wrapper
-    return aux
+            return await endpoint(*args, **kwargs)
+        return inner
+    return wrapper
 
 @router.get("/test1")
 @handleExceptions
@@ -35,26 +37,36 @@ async def test1(user = Depends(get_user)):
 
 
 # Example 2: Abstracting the user capture from the kwargs allowing to simplify the verification
-def inject_permissions(verfication):
-    def aux(func):
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            if not "user" in kwargs:
-                raise HTTP_401_UNAUTHORIZED("No está autenticado")
-            verfication(kwargs["user"])
-            return await func(*args, **kwargs)
-        return wrapper
-    return aux
+def _get_params(verification, endpoint):
+    required = inspect.signature(verification).parameters.keys()
+    params = inspect.signature(endpoint).parameters.keys()
+    missing = list(set(required) - set(params))
+    if missing:
+        raise Exception(f"In endpoint {endpoint.__name__} the function {verification.__name__} requires the parameters {missing}")
+    return required
+
+def inject_depends(verification: Callable):
+    @wraps(verification)
+    def wrapper(endpoint: Callable):
+        params = _get_params(verification, endpoint)
+        @wraps(endpoint)
+        async def inner(*args, **kwargs):
+            parameters = {key: kwargs[key] for key in params}
+            verification(**parameters)
+            return await endpoint(*args, **kwargs)
+        return inner
+    return wrapper
+
 
 def names(names: list[str]):
-    @inject_permissions
+    @inject_depends
     def verification(user):
         if user["name"] not in names:
             raise HTTP_403_FORBIDDEN("No tiene permisos")
     return verification
 
 def permissions(permissions: list[str]):
-    @inject_permissions
+    @inject_depends
     def verification(user):
         for permission in permissions:
             if permission not in user["permissions"]:
