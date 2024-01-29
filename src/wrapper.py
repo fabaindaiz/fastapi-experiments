@@ -41,9 +41,9 @@ def _get_params(verification, endpoint):
     required = inspect.signature(verification).parameters.keys()
     params = inspect.signature(endpoint).parameters.keys()
     missing = list(set(required) - set(params))
-    if missing:
-        raise Exception(f"In endpoint {endpoint.__name__} the function {verification.__name__} requires the parameters {missing}")
-    return required
+    if not missing:
+        return required
+    raise Exception(f"In endpoint {endpoint.__name__} the function {verification.__name__} requires the parameters {missing}")
 
 def inject_depends(verification: Callable):
     @wraps(verification)
@@ -52,25 +52,28 @@ def inject_depends(verification: Callable):
         @wraps(endpoint)
         async def inner(*args, **kwargs):
             parameters = {key: kwargs[key] for key in params}
-            verification(**parameters)
-            return await endpoint(*args, **kwargs)
+            if await verification(**parameters):
+                return await endpoint(*args, **kwargs)
+            raise HTTP_403_FORBIDDEN("You are not authorized to do this operation")
         return inner
     return wrapper
 
 
 def names(names: list[str]):
     @inject_depends
-    def verification(user):
-        if user["name"] not in names:
-            raise HTTP_403_FORBIDDEN("No tiene permisos")
+    async def verification(user):
+        if user["name"] in names:
+            return True
+        raise HTTP_403_FORBIDDEN("No tiene permisos")
     return verification
 
 def permissions(permissions: list[str]):
     @inject_depends
-    def verification(user):
+    async def verification(user):
         for permission in permissions:
             if permission not in user["permissions"]:
                 raise HTTP_403_FORBIDDEN("No tiene permisos")
+        return True
     return verification
 
 @router.get("/test2")
